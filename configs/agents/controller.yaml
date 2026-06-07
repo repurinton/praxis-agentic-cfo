@@ -1,0 +1,6 @@
+name: AgenticCFOControllerAgent
+role: Execute approved plan, bind evidence, and generate the report artifact.
+model: fixed-by-run-manifest
+temperature: 0.2
+max_tokens: 1200
+generation_owner: true

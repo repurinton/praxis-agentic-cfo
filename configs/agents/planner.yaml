@@ -1,0 +1,5 @@
+name: AgenticCFOPlannerAgent
+role: Break a reporting case into evidence-constrained execution steps.
+model: fixed-by-run-manifest
+temperature: 0.2
+max_tokens: 1200

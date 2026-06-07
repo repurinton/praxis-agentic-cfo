@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-cfo-praxis"
+version = "0.2.0"
+description = "Agentic CFO praxis scaffold: evidence binding, verification, release gating, and audit traces"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{name = "Rob Purinton"}]
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.0",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+synth = [
+  "numpy>=1.26",
+]
+agents = [
+  "openai>=2.0.0",
+  "openai-agents>=0.1.0",
+  "python-dotenv>=1.0.0",
+]
+ui = [
+  "streamlit>=1.36",
+]
+
+[project.scripts]
+agentic-cfo = "agentic_cfo.cli:main"
+praxis-run = "praxis_agentkit.cli:main"
+praxis-eval = "praxis_eval.harness_cli:main"
+agentic-cfo-ui = "agentic_cfo.ui.platform:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["praxis_synth*"]
+
+[tool.setuptools.package-data]
+agentic_cfo = ["agents/prompts/*.md"]

@@ -1,0 +1,9 @@
+numeric_agreement_min: 0.995
+factscore_min: 0.800
+ragas_faithfulness_min: 0.800
+unsupported_claim_rate_max: 0.010
+audit_evidence_package_completeness_min: 0.950
+claim_traceability_rate_min: 0.950
+perturbation_numeric_disagreement_increase_max_bps: 50
+perturbation_factscore_delta_max: 0.05
+perturbation_unsupported_claim_rate_increase_max: 0.020

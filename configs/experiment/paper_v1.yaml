@@ -1,0 +1,19 @@
+experiment_id: paper_v1
+systems:
+  - baseline_a_deterministic
+  - baseline_b_llm_assisted
+  - baseline_c_rag_only
+  - agentic_cfo
+conditions:
+  - clean
+  - single_perturbation
+  - compound_perturbation
+partitions:
+  - baseline_validation
+  - perturbation
+  - governance_review
+  - holdout_audit
+replications: 5
+dataset_config: configs/datasets/paper_synthetic_v1.yaml
+threshold_config: configs/eval/paper_thresholds.yaml
+locked_run_config: configs/run/evaluation_locked.yaml

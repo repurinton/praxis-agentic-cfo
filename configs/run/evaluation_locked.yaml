@@ -1,0 +1,23 @@
+run_profile: evaluation_locked
+generation_owner: AgenticCFOControllerAgent
+models:
+  planner:
+    name: AgenticCFOPlannerAgent
+    model: deterministic-local
+    temperature: 0.2
+    max_tokens: 1200
+  controller:
+    name: AgenticCFOControllerAgent
+    model: deterministic-local
+    temperature: 0.2
+    max_tokens: 1200
+  verifier:
+    name: AgenticCFOVerifierAgent
+    model: deterministic-local
+    temperature: 0.0
+    max_tokens: 1200
+artifacts:
+  persist_prompts: true
+  persist_intermediate_claims: true
+  persist_evidence_spans: true
+  hash_chain_audit_events: true

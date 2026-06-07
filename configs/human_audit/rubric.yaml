@@ -1,0 +1,19 @@
+rubric_id: cpa_four_level_v1
+scale:
+  - rating: 0
+    label: Unsupported
+    definition: Evidence is missing or does not support material claims.
+  - rating: 1
+    label: Material Issues
+    definition: One or more material numeric or factual issues remain.
+  - rating: 2
+    label: Minor Issues
+    definition: Evidence supports the artifact with non-material presentation issues.
+  - rating: 3
+    label: Release Ready
+    definition: Claims are adequately supported and ready for governed release.
+sampling:
+  default_per_system: 120
+  inclusion_basis: released_or_conditionally_released
+agreement:
+  method: quadratic_weighted_cohens_kappa

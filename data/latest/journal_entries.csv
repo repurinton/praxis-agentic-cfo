@@ -1,0 +1,5 @@
+txn_id,account,debit,credit
+T1,Accounts Receivable,1000,0
+T1,Revenue,0,1000
+T2,Expense,620,0
+T2,Cash,0,620

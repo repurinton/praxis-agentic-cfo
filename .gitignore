@@ -1,0 +1,48 @@
+# Virtual environments
+.venv/
+venv/
+
+# Environment variables
+.env
+
+# pytest
+.pytest_cache/
+
+# --- Praxis: generated synthetic outputs ---
+data/synth_run_*/
+data/generated/
+data/paper_scale/
+data/fixtures/
+runs/*
+!runs/README.md
+praxis_runs/
+audit_store/*
+!audit_store/README.md
+results/
+human_audit/*
+!human_audit/README.md
+review-output/*
+!review-output/.gitkeep
+
+# --- Python build artifacts ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Test/tool caches ---
+.mypy_cache/
+.ruff_cache/
+
+# --- OS/editor ---
+.DS_Store
+.vscode/
+.idea/
+
+
+# Local eval outputs
+/evals/out/
+*.bak
+*.jsonl
+praxis_evals/out/

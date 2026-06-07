@@ -1,0 +1,5 @@
+name: AgenticCFOVerifierAgent
+role: Extract, normalize, verify, score, and threshold report claims.
+model: fixed-by-run-manifest
+temperature: 0.0
+max_tokens: 1200
