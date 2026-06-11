@@ -658,6 +658,44 @@ def render_reviewer(paths: backend.PlatformPaths) -> None:
             st.rerun()
 
 
+def _grouped_metric_chart(clean: dict[str, dict[str, float]]) -> None:
+    """Clustered (grouped) column chart of the six metrics by system, with a
+    numeric data label above every column."""
+    import altair as alt
+
+    short = {
+        "numeric_agreement": "numeric_agr",
+        "factscore": "factscore",
+        "ragas_faithfulness": "ragas_faith",
+        "unsupported_claim_rate": "unsupported",
+        "audit_evidence_package_completeness": "audit_pkg",
+        "claim_traceability_rate": "traceability",
+    }
+    rows = [
+        {"metric": short.get(metric, metric), "system": system, "value": round(float(value), 3)}
+        for system, metrics in clean.items()
+        for metric, value in metrics.items()
+    ]
+    df = pd.DataFrame(rows)
+    x = alt.X("metric:N", title=None, axis=alt.Axis(labelAngle=-30))
+    offset = alt.XOffset("system:N")
+    color = alt.Color("system:N", title="System", legend=alt.Legend(orient="bottom", columns=2))
+    bars = alt.Chart(df).mark_bar().encode(
+        x=x,
+        xOffset=offset,
+        color=color,
+        y=alt.Y("value:Q", title="score", scale=alt.Scale(domain=[0, 1.12])),
+        tooltip=["metric", "system", "value"],
+    )
+    labels = alt.Chart(df).mark_text(dy=-4, fontSize=9, color="#1f2328").encode(
+        x=x,
+        xOffset=offset,
+        y=alt.Y("value:Q"),
+        text=alt.Text("value:Q", format=".2f"),
+    )
+    st.altair_chart((bars + labels).properties(height=380), use_container_width=True)
+
+
 def render_analytics(paths: backend.PlatformPaths) -> None:
     st.title("Analytics")
     store = _manager(paths).store
@@ -710,7 +748,7 @@ def render_analytics(paths: backend.PlatformPaths) -> None:
     clean = mets["clean_metric_by_system"]
     if clean:
         st.caption("Clean-condition metric profile by system")
-        st.bar_chart(pd.DataFrame(clean))
+        _grouped_metric_chart(clean)
     st.caption("System × condition summary")
     st.dataframe(_df(mets["summary"]), hide_index=True, width="stretch")
     st.caption("Release-gate pass rate by system × condition")

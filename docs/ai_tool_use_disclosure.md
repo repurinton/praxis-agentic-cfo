@@ -1,6 +1,6 @@
 # AI And Tool Use Disclosure
 
-This repository was developed with AI-assisted coding support in Codex. The author remains responsible for reviewing, testing, and accepting all generated code, documentation, and configuration changes.
+This repository was developed with AI-assisted coding support. The author remains responsible for reviewing, testing, and accepting all generated code, documentation, and configuration changes.
 
 ## Disclosed Uses
 
