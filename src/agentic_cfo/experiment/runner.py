@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
@@ -22,6 +23,10 @@ from agentic_cfo.release.gate import ReleaseGate
 from agentic_cfo.systems.registry import system_runner
 
 GATED_SYSTEM = "agentic_cfo"
+
+
+class ExperimentCancelled(Exception):
+    """Raised when a ``should_cancel`` hook requests cooperative cancellation."""
 
 
 @dataclass(frozen=True)
@@ -57,7 +62,16 @@ def run_experiment(
     threshold_path: Path,
     out_dir: Path,
     max_cases_per_condition: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> ExperimentResult:
+    """Run the system x condition x replication matrix.
+
+    ``on_progress(done, total)`` is invoked after each result row so callers
+    (e.g. the background job manager) can report progress. ``should_cancel()``
+    is polled between units; returning True raises :class:`ExperimentCancelled`
+    for cooperative cancellation. Both are optional and default to no-ops.
+    """
     thresholds = load_yaml_mapping(threshold_path)
     base_cases = load_cases(dataset_path / "cases.jsonl")
     verifier = AgenticCFOVerifierAgent()
@@ -70,15 +84,24 @@ def run_experiment(
     # live-model systems exhibit genuine nondeterminism across trials.
     replications = max(1, int(contract.replications))
 
+    # Precompute the condition -> cases plan and the total unit count so progress
+    # can be reported as a fraction.
+    plan: list[tuple[str, tuple]] = []
     for condition in contract.conditions:
         condition_cases = cases_for_condition(base_cases, condition)
         if max_cases_per_condition is not None:
             condition_cases = condition_cases[:max_cases_per_condition]
+        plan.append((condition, condition_cases))
+    total = sum(len(cases) for _, cases in plan) * len(contract.systems) * replications
+
+    for condition, condition_cases in plan:
         for case in condition_cases:
             corpus = corpus_from_case(case)
             for system_name in contract.systems:
                 runner = system_runner(system_name)
                 for trial in range(replications):
+                    if should_cancel is not None and should_cancel():
+                        raise ExperimentCancelled(f"cancelled after {len(rows)}/{total} units")
                     run_id = f"run:{uuid4()}"
                     started = time.perf_counter()
                     artifact = runner.run(case, run_id=run_id)
@@ -108,6 +131,8 @@ def run_experiment(
                         "verification_status": verification.status.value,
                     })
                     rows.append(row)
+                    if on_progress is not None:
+                        on_progress(len(rows), total)
 
     from agentic_cfo.llm import llm_mode, llm_model
 

@@ -5,6 +5,9 @@ venv/
 # Environment variables
 .env
 
+# Platform UI state (SQLite job store + job logs)
+.agentic_cfo/
+
 # pytest
 .pytest_cache/
 

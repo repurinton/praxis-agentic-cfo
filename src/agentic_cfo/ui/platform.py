@@ -8,7 +8,8 @@ from typing import Any
 
 import pandas as pd
 
-from agentic_cfo.ui import backend
+from agentic_cfo.ui import backend, settings as settings_backend
+from agentic_cfo.ui.jobs import get_job_manager
 
 try:
     import streamlit as st
@@ -19,6 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only when UI extra i
 NAV_ITEMS = (
     "Dashboard",
     "Experiments",
+    "Jobs",
     "Runs",
     "Results",
     "Data",
@@ -39,6 +41,23 @@ def _paths() -> backend.PlatformPaths:
     if "platform_paths" not in st.session_state:
         st.session_state.platform_paths = backend.default_paths()
     return st.session_state.platform_paths
+
+
+def _manager(paths: backend.PlatformPaths):
+    # Process-level singleton: survives Streamlit reruns so background jobs keep
+    # running and progress is read back from the SQLite store.
+    return get_job_manager(paths)
+
+
+def _status_badge(status: str) -> str:
+    color = {
+        "queued": "var(--subtle)",
+        "running": "var(--accent)",
+        "succeeded": "var(--ok)",
+        "failed": "var(--bad)",
+        "cancelled": "var(--warn)",
+    }.get(status, "var(--subtle)")
+    return f'<span style="color:{color};font-weight:600">{escape(status)}</span>'
 
 
 def _df(rows: Any) -> pd.DataFrame:
@@ -164,11 +183,25 @@ def render_shell() -> str:
     paths = _paths()
     st.sidebar.title("Agentic CFO")
     st.sidebar.caption("Experiment operations")
-    nav = st.sidebar.radio("Navigate", NAV_ITEMS, label_visibility="collapsed")
+
+    default_index = 0
+    forced = st.session_state.pop("force_nav", None)
+    if forced in NAV_ITEMS:
+        default_index = NAV_ITEMS.index(forced)
+    nav = st.sidebar.radio("Navigate", NAV_ITEMS, index=default_index, label_visibility="collapsed")
+
+    active_jobs = [j for j in _manager(paths).store.list_jobs(limit=50) if not j.is_terminal]
+    if active_jobs:
+        st.sidebar.info(f"{len(active_jobs)} job(s) running")
+
+    llm = settings_backend.current_settings(paths.repo_root / ".env")
+    st.sidebar.caption(f"Mode: {llm['mode'].upper()} · {llm['model']}")
+
     st.sidebar.divider()
     st.sidebar.caption("Workspace")
     st.sidebar.text(str(paths.repo_root))
-    st.sidebar.button("Refresh", width="stretch")
+    if st.sidebar.button("Refresh", width="stretch"):
+        st.rerun()
     return nav
 
 
@@ -216,18 +249,27 @@ def render_dashboard(paths: backend.PlatformPaths) -> None:
         if results["systems"]:
             st.write(", ".join(results["systems"]))
 
-    st.subheader("Next Useful GUI Work")
+    st.subheader("Platform Status")
     st.write(
-        "Add authentication/RBAC, background job workers, live logs, persisted job history, reviewer imports, "
-        "statistical notebooks, external metric adapters, and deployment-grade storage once the local platform flow is stable."
+        "Implemented: background job queue with progress/cancel/logs, SQLite-persisted "
+        "job history, and a Settings panel for the API key and deterministic/live mode. "
+        "Remaining hardening is tracked on the GUI Plan page."
     )
 
 
 def render_experiments(paths: backend.PlatformPaths) -> None:
     st.title("Experiments")
+    manager = _manager(paths)
     configs = backend.list_configs(paths.repo_root)
     contract_options = configs["experiments"] or (paths.repo_root / "configs" / "experiment" / "paper_v1.yaml",)
     dataset_options = configs["datasets"] or (paths.repo_root / "configs" / "datasets" / "paper_synthetic_v1.yaml",)
+
+    llm = settings_backend.current_settings(paths.repo_root / ".env")
+    badge = "LIVE" if llm["mode"] == "live" else "DETERMINISTIC"
+    if llm["mode"] == "live" and not llm["api_key_present"]:
+        st.warning("Live mode is selected but no API key is set. Set it on the Settings page before running.")
+    else:
+        st.caption(f"Generation mode: **{badge}** · model: {llm['model']}")
 
     left, right = st.columns([0.42, 0.58])
     with left:
@@ -236,37 +278,100 @@ def render_experiments(paths: backend.PlatformPaths) -> None:
         dataset_config = st.selectbox("Dataset config", dataset_options, format_func=lambda p: str(p.relative_to(paths.repo_root)))
         max_cases = st.number_input("Max cases per condition", min_value=1, max_value=10000, value=2, step=1)
         full_run = st.checkbox("Run all generated cases", value=False)
-        st.caption("Operations call Python backend functions directly. No experiment action shells out through the CLI.")
+        st.caption("Operations run as background jobs. Track progress and cancel on the Jobs page.")
 
         if st.button("Generate Dataset", width="stretch"):
-            with st.spinner("Generating dataset"):
-                st.session_state.last_dataset_status = backend.generate_dataset_from_config(
-                    config_path=Path(dataset_config),
-                    out_dir=paths.dataset_dir,
-                )
-            st.success("Dataset generated")
+            job_id = manager.submit("generate_dataset", {"config_path": str(dataset_config)})
+            st.session_state.last_job_id = job_id
+            st.success(f"Queued dataset job · {job_id}")
 
         if st.button("Run Experiment Matrix", type="primary", width="stretch"):
-            with st.spinner("Running matrix"):
-                st.session_state.last_experiment_status = backend.run_experiment_matrix_backend(
-                    contract_path=Path(contract_path),
-                    dataset_out=paths.dataset_dir,
-                    results_out=paths.results_dir,
-                    max_cases_per_condition=None if full_run else int(max_cases),
-                )
-            st.success("Experiment matrix complete")
+            job_id = manager.submit(
+                "run_experiment_matrix",
+                {
+                    "contract_path": str(contract_path),
+                    "max_cases_per_condition": None if full_run else int(max_cases),
+                },
+            )
+            st.session_state.last_job_id = job_id
+            st.success(f"Queued experiment matrix · {job_id}")
 
         if st.button("Regenerate Chapter 4 Tables", width="stretch"):
-            with st.spinner("Writing tables"):
-                st.session_state.last_tables = backend.regenerate_chapter4_tables_backend(results_dir=paths.results_dir)
-            st.success("Tables written")
+            job_id = manager.submit("regenerate_tables", {})
+            st.session_state.last_job_id = job_id
+            st.success(f"Queued table regeneration · {job_id}")
 
     with right:
         st.subheader("Contract Preview")
         if Path(contract_path).exists():
             _json_block(backend.load_yaml_mapping(Path(contract_path)))
-        st.subheader("Last Operation")
-        _json_block(st.session_state.get("last_experiment_status") or st.session_state.get("last_dataset_status") or {})
+        last_job_id = st.session_state.get("last_job_id")
+        if last_job_id:
+            job = manager.store.get_job(last_job_id)
+            if job:
+                st.subheader("Most Recent Job")
+                st.markdown(_status_badge(job.status), unsafe_allow_html=True)
+                if not job.is_terminal:
+                    st.progress(job.fraction, text=f"{job.progress}/{job.total}")
+                    if st.button("Open Jobs page"):
+                        st.session_state.force_nav = "Jobs"
+                        st.rerun()
+                else:
+                    _json_block(job.to_dict())
+
+
+def render_jobs(paths: backend.PlatformPaths) -> None:
+    st.title("Jobs")
+    manager = _manager(paths)
+    jobs = manager.store.list_jobs(limit=100)
+    active = [j for j in jobs if not j.is_terminal]
+
+    top = st.columns([0.25, 0.25, 0.5])
+    top[0].metric("Active", len(active))
+    top[1].metric("Total", len(jobs))
+    with top[2]:
+        c1, c2 = st.columns(2)
+        if c1.button("Refresh", width="stretch"):
+            st.rerun()
+        if c2.button("Clear finished", width="stretch"):
+            manager.store.clear_terminal_jobs()
+            st.rerun()
+    auto = st.checkbox("Auto-refresh while jobs are running", value=bool(active))
+
+    if not jobs:
+        st.info("No jobs yet. Start one from the Experiments, Runs, or Human Audit pages.")
+        return
+
+    for job in jobs:
+        with st.container(border=True):
+            head = st.columns([0.5, 0.3, 0.2])
+            head[0].markdown(f"**{escape(job.kind)}** · `{escape(job.id)}`")
+            head[1].markdown(_status_badge(job.status), unsafe_allow_html=True)
+            if not job.is_terminal:
+                if head[2].button("Cancel", key=f"cancel_{job.id}", width="stretch"):
+                    manager.cancel(job.id)
+                    st.toast(f"Cancellation requested for {job.id}")
+            if not job.is_terminal:
+                st.progress(job.fraction, text=f"{job.progress}/{job.total} · {job.message}")
+            elif job.status == "failed":
+                st.error(job.error or "failed")
+            with st.expander("Details", expanded=not job.is_terminal):
+                if job.params:
+                    st.caption("Params")
+                    _json_block(job.params)
+                if job.result:
+                    st.caption("Result")
+                    _json_block(job.result)
+                log = manager.read_log(job.id, tail=200)
+                if log:
+                    st.caption("Log (tail)")
+                    st.code(log, language="text")
+
+    if auto and active:
+        import time as _time
+
+        _time.sleep(1.5)
+        st.rerun()
 
 
 def render_runs(paths: backend.PlatformPaths) -> None:
@@ -276,16 +381,9 @@ def render_runs(paths: backend.PlatformPaths) -> None:
         st.subheader("Create Fixture Run")
         requested_run_id = st.text_input("Run ID", value="")
         if st.button("Run Agentic CFO Fixture", type="primary", width="stretch"):
-            with st.spinner("Running fixture"):
-                st.session_state.last_fixture_run = backend.run_fixture_backend(
-                    fixture_dir=paths.fixture_dir,
-                    runs_dir=paths.runs_dir,
-                    run_id=requested_run_id.strip() or None,
-                    create_fixture=True,
-                )
-            st.success("Fixture run complete")
-        if st.session_state.get("last_fixture_run"):
-            _json_block(st.session_state.last_fixture_run)
+            job_id = _manager(paths).submit("fixture_run", {"run_id": requested_run_id.strip() or None})
+            st.session_state.last_job_id = job_id
+            st.success(f"Queued fixture run · {job_id} (track on Jobs page)")
 
         st.subheader("Run Inventory")
         run_roots = backend.list_run_roots(paths.runs_dir)
@@ -322,6 +420,15 @@ def render_results(paths: backend.PlatformPaths) -> None:
         return
 
     _metric_grid({"Rows": len(rows), "Systems": len(status["systems"]), "Conditions": len(status["conditions"])})
+
+    meta = backend.read_json(paths.results_dir / "results.json").get("meta", {}) if (paths.results_dir / "results.json").exists() else {}
+    if meta:
+        mode = str(meta.get("llm_mode", "?")).upper()
+        st.caption(
+            f"Provenance · mode: **{mode}** · model: {meta.get('llm_model', '?')} · "
+            f"replications: {meta.get('replications', '?')} · rows: {meta.get('row_count', len(rows))}"
+        )
+
     filters = st.columns(3)
     system_filter = filters[0].multiselect("Systems", status["systems"], default=status["systems"])
     condition_filter = filters[1].multiselect("Conditions", status["conditions"], default=status["conditions"])
@@ -399,16 +506,12 @@ def render_human_audit(paths: backend.PlatformPaths) -> None:
     per_system = st.number_input("Sample per system", min_value=1, max_value=120, value=10, step=1)
     out_path = paths.human_audit_dir / "demo_summary.json"
     if st.button("Run Human Audit Demo", type="primary", width="stretch"):
-        with st.spinner("Computing blinded sample and agreement"):
-            st.session_state.human_audit_summary = backend.human_audit_demo_backend(
-                results_dir=paths.results_dir,
-                out_path=out_path,
-                per_system=int(per_system),
-            )
-        st.success("Human audit workflow check complete")
+        job_id = _manager(paths).submit("human_audit_demo", {"per_system": int(per_system)})
+        st.session_state.last_job_id = job_id
+        st.success(f"Queued human-audit demo · {job_id} (track on Jobs page)")
 
-    summary = st.session_state.get("human_audit_summary")
-    if summary is None and out_path.exists():
+    summary = None
+    if out_path.exists():
         summary = backend.read_json(out_path)
     if summary:
         _metric_grid(
@@ -426,6 +529,55 @@ def render_human_audit(paths: backend.PlatformPaths) -> None:
 
 def render_settings(paths: backend.PlatformPaths) -> None:
     st.title("Settings")
+
+    env_path = paths.repo_root / ".env"
+    current = settings_backend.current_settings(env_path)
+
+    st.subheader("Model / Generation")
+    grid = st.columns(3)
+    grid[0].metric("Mode", current["mode"].upper())
+    grid[1].metric("Model", current["model"])
+    grid[2].metric("API key", current["api_key_masked"])
+    if current["mode"] == "live" and not current["api_key_present"]:
+        st.warning("Live mode requires an API key. Add one below to enable real model calls.")
+
+    with st.form("llm_settings"):
+        mode = st.radio(
+            "Generation mode",
+            settings_backend.MODES,
+            index=settings_backend.MODES.index(current["mode"]),
+            format_func=lambda m: "Deterministic (offline, reproducible)" if m == "deterministic" else "Live (OpenAI)",
+            horizontal=True,
+        )
+        model = st.text_input("Model", value=current["model"])
+        new_key = st.text_input(
+            "OpenAI API key",
+            value="",
+            type="password",
+            placeholder="leave blank to keep current key",
+        )
+        clear_key = st.checkbox("Clear stored API key", value=False)
+        submitted = st.form_submit_button("Save settings", type="primary")
+        if submitted:
+            api_key_arg = "" if clear_key else (new_key or None)
+            result = settings_backend.apply_settings(
+                env_path=env_path,
+                mode=mode,
+                model=model,
+                api_key=api_key_arg,
+                persist=True,
+            )
+            st.success(f"Saved. Mode: {result['mode'].upper()} · key {result['api_key_masked']}")
+            st.caption(f"Persisted to {result['env_path']} (gitignored). New jobs use these settings.")
+            st.rerun()
+
+    st.caption(
+        "Deterministic mode runs offline and is fully reproducible. Live mode routes "
+        "baseline B/C and the agentic system through the OpenAI API; cycle times then "
+        "reflect measured latency."
+    )
+
+    st.divider()
     st.subheader("Configured Paths")
     st.dataframe(_df([{"key": k, "path": v} for k, v in paths.to_dict().items()]), width="stretch", hide_index=True)
 
@@ -444,17 +596,23 @@ def render_settings(paths: backend.PlatformPaths) -> None:
 
 def render_gui_plan() -> None:
     st.title("GUI Plan")
-    st.write("The implemented UI now covers local project operations. The next GUI plan should include:")
+    st.write("Implemented in this build:")
+    done_rows = (
+        {"area": "Background jobs", "status": "done", "detail": "Threaded job queue with progress, cooperative cancellation, and per-job logs."},
+        {"area": "Persistent state", "status": "done", "detail": "SQLite store for job history and UI settings (.agentic_cfo/platform.db)."},
+        {"area": "Settings / LLM", "status": "done", "detail": "API-key field and deterministic/live mode toggle, persisted to .env and applied to running jobs."},
+        {"area": "Provenance", "status": "done", "detail": "Results page surfaces llm_mode/model/replications from results.json meta."},
+    )
+    st.dataframe(_df(done_rows), width="stretch", hide_index=True)
+
+    st.write("Remaining hardening (not in scope for this build):")
     plan_rows = (
-        {"area": "Access control", "work": "Add authentication, project roles, and RBAC for Preparer, Reviewer, Approver, and Admin."},
-        {"area": "Background jobs", "work": "Move long experiment runs to a job queue with cancellation, retry, progress, and log streaming."},
-        {"area": "Persistent state", "work": "Replace folder scans with a SQLite/Postgres metadata store for datasets, runs, artifacts, reviewers, and jobs."},
-        {"area": "Reviewer workflow", "work": "Add CPA rating import, double-blind assignment, adjudication queue, comments, rubric locks, and exportable reviewer packets."},
-        {"area": "Prompt governance", "work": "Add prompt template versioning, diff review, approval gates, and provider/runtime capture."},
-        {"area": "Metric adapters", "work": "Add external FActScore/RAGAS integrations with cached scoring payloads and evaluator version manifests."},
-        {"area": "Analytics", "work": "Add hypothesis views, confidence intervals, exact Chapter 4 tables, charts, and statistical notebook exports."},
-        {"area": "Artifact registry", "work": "Add searchable evidence spans, claims, exceptions, release attestations, and signed checksum manifests."},
-        {"area": "Operations", "work": "Add alerts for failed thresholds, stale datasets, broken audit chains, missing artifacts, and incomplete human-audit samples."},
+        {"area": "Reviewer workflow", "work": "CPA rating import, double-blind assignment, adjudication queue, comments, rubric locks, exportable packets."},
+        {"area": "Prompt governance", "work": "Prompt template versioning, diff review, approval gates, and provider/runtime capture."},
+        {"area": "Metric adapters", "work": "External FActScore/RAGAS integrations with cached scoring payloads and evaluator version manifests."},
+        {"area": "Analytics", "work": "Hypothesis views, confidence intervals, exact Chapter 4 tables, charts, and statistical notebook exports."},
+        {"area": "Artifact registry", "work": "Searchable evidence spans, claims, exceptions, release attestations, and signed checksum manifests."},
+        {"area": "Operations", "work": "Alerts for failed thresholds, stale datasets, broken audit chains, missing artifacts, and incomplete human-audit samples."},
         {"area": "Deployment", "work": "Package the UI as a service with environment profiles, health checks, backups, and object-store support."},
     )
     st.dataframe(_df(plan_rows), width="stretch", hide_index=True)
@@ -470,6 +628,8 @@ def app() -> None:
         render_dashboard(paths)
     elif nav == "Experiments":
         render_experiments(paths)
+    elif nav == "Jobs":
+        render_jobs(paths)
     elif nav == "Runs":
         render_runs(paths)
     elif nav == "Results":

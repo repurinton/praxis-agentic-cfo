@@ -5,6 +5,7 @@ import io
 import json
 import shutil
 import zipfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -142,6 +143,8 @@ def run_experiment_matrix_backend(
     dataset_out: Path,
     results_out: Path,
     max_cases_per_condition: int | None,
+    on_progress: Callable[[int, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     contract = load_experiment_contract(contract_path)
     if not (dataset_out / "cases.jsonl").exists():
@@ -153,6 +156,8 @@ def run_experiment_matrix_backend(
         threshold_path=REPO_ROOT / contract.threshold_config,
         out_dir=results_out,
         max_cases_per_condition=max_cases_per_condition,
+        on_progress=on_progress,
+        should_cancel=should_cancel,
     )
     table_paths = write_chapter4_tables(results_json=results_out / "results.json", out_dir=results_out)
     return {

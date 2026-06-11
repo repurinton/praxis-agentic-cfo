@@ -96,3 +96,26 @@ The `meta` block in `results.json` records exactly how a result set was produced
 (mode, model, replications). Always report the mode used for any figure that
 appears in the paper: deterministic results are reproducible illustrations of the
 evaluation harness; live results are the empirical measurements.
+
+## Platform UI
+
+A Streamlit operator console manages the whole suite without touching the CLI:
+
+```bash
+.venv/bin/pip install -e ".[ui]"
+.venv/bin/streamlit run praxis_gui.py
+```
+
+- **Experiments / Runs / Human Audit** enqueue work as **background jobs** so the
+  UI never blocks. The **Jobs** page shows live progress, cancellation, per-job
+  logs, and results. Job history is persisted in a SQLite store at
+  `.agentic_cfo/platform.db` (gitignored) and survives restarts.
+- **Settings** sets the `OPENAI_API_KEY` and toggles deterministic/live mode +
+  model. Values are written to the gitignored `.env` and applied to subsequently
+  launched jobs; the key is never displayed in full.
+- **Results** surfaces the `meta` provenance (mode/model/replications) alongside
+  the Chapter 4 tables.
+
+The UI is a local single-user research console. Remaining production hardening
+(reviewer workflow, prompt governance, external metric adapters, analytics,
+deployment packaging) is enumerated on the in-app **GUI Plan** page.

@@ -4,8 +4,14 @@ import json
 from pathlib import Path
 
 from agentic_cfo.data.generator import generate_cases_from_config, write_dataset
+import pytest
+
 from agentic_cfo.experiment.contract import load_experiment_contract
-from agentic_cfo.experiment.runner import cases_for_condition, run_experiment
+from agentic_cfo.experiment.runner import (
+    ExperimentCancelled,
+    cases_for_condition,
+    run_experiment,
+)
 from agentic_cfo.perturbations import (
     apply_compound_perturbation,
     apply_conflicting_records,
@@ -57,6 +63,37 @@ def test_experiment_runner_writes_matrix_rows_and_applies_gate_only_to_agentic_c
     assert all(r["release_gate_applied"] is False for r in result.rows if r["system"] != "agentic_cfo")
     assert all(r["release_action"] == "not_applicable_no_release_gate" for r in result.rows if r["system"] != "agentic_cfo")
     assert all(r["release_gate_applied"] is True for r in result.rows if r["system"] == "agentic_cfo")
+
+
+def test_run_experiment_reports_progress_and_supports_cancellation(tmp_path):
+    contract = load_experiment_contract(ROOT / "configs/experiment/paper_v1.yaml")
+    cases = generate_cases_from_config(ROOT / "configs/datasets/paper_synthetic_v1.yaml")
+    dataset_dir = tmp_path / "dataset"
+    write_dataset(cases, dataset_dir)
+
+    seen: list[tuple[int, int]] = []
+    run_experiment(
+        contract=contract,
+        dataset_path=dataset_dir,
+        threshold_path=ROOT / contract.threshold_config,
+        out_dir=tmp_path / "results",
+        max_cases_per_condition=1,
+        on_progress=lambda done, total: seen.append((done, total)),
+    )
+    # Progress is monotonic and ends at the total (60 units for max_cases=1).
+    assert seen[-1] == (60, 60)
+    assert [d for d, _ in seen] == sorted(d for d, _ in seen)
+
+    # Cooperative cancellation raises before completing.
+    with pytest.raises(ExperimentCancelled):
+        run_experiment(
+            contract=contract,
+            dataset_path=dataset_dir,
+            threshold_path=ROOT / contract.threshold_config,
+            out_dir=tmp_path / "results_cancelled",
+            max_cases_per_condition=1,
+            should_cancel=lambda: True,
+        )
 
 
 def test_cases_for_condition_expands_single_perturbations():
