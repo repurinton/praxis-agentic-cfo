@@ -8,6 +8,9 @@ venv/
 # Platform UI state (SQLite job store + job logs)
 .agentic_cfo/
 
+# Local UI screenshots (kept on disk, not committed)
+docs/screenshots/
+
 # pytest
 .pytest_cache/
 
