@@ -16,6 +16,23 @@ class AgenticCFOSystem(SystemRunner):
 
     def run(self, case: ReportingCase, *, run_id: str) -> ReportArtifact:
         plan = self.planner.create_plan(dataset_id=case.dataset_id, partition=case.partition)
+
+        from agentic_cfo.llm import llm_is_live
+
+        if llm_is_live():
+            from agentic_cfo.core.models import SystemCondition
+            from agentic_cfo.llm.report_generation import generate_report_via_llm
+
+            # Controller owns generation; the verifier and release gate are applied
+            # downstream by the experiment runner. Claims are corpus-grounded.
+            return generate_report_via_llm(
+                case,
+                run_id=run_id,
+                system=SystemCondition.AGENTIC_CFO,
+                generated_by=self.controller.name,
+                bind_evidence=True,
+            )
+
         return self.controller.generate_report(
             plan=plan,
             run_id=run_id,

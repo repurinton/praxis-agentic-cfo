@@ -41,8 +41,11 @@ def test_system_runners_expose_pdf_baselines_and_agentic_cfo():
     agentic_verification = verifier.verify(agentic, thresholds=thresholds, corpus=corpus)
 
     assert baseline_b.generated_by == "baseline_b_llm_assisted"
-    assert baseline_b_verification.metrics["numeric_agreement"] == 0.0
-    assert baseline_b_verification.metrics["unsupported_claim_rate"] == 1.0
+    # LLM-assisted baseline cites figures (so they are bound) but transcribes one
+    # inaccurately and leaves the derived claim ungrounded: a realistic mid-tier
+    # profile rather than an all-zero degenerate one.
+    assert baseline_b_verification.metrics["numeric_agreement"] == 0.5
+    assert baseline_b_verification.metrics["unsupported_claim_rate"] == 1 / 3
     assert agentic.generated_by == "AgenticCFOControllerAgent"
     assert agentic_verification.metrics["numeric_agreement"] == 1.0
     assert agentic_verification.metrics["factscore"] == 1.0

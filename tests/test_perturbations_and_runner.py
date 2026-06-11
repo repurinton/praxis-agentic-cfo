@@ -25,9 +25,10 @@ def test_perturbations_encode_missing_conflicting_and_temporal_conditions():
     temporal = apply_temporal_misalignment(case)
     compound = apply_compound_perturbation(case)
 
+    revenue_base = next(r.balance for r in case.records if r.account == "Revenue")
     assert "Expense" not in {r.account for r in missing.records}
     assert missing.policy_text == ""
-    assert next(r for r in conflicting.records if r.account == "Revenue").balance == 1050.0
+    assert next(r for r in conflicting.records if r.account == "Revenue").balance == revenue_base + 50.0
     assert next(r for r in temporal.records if r.account == "Expense").period.endswith("MISALIGNED")
     assert compound.perturbations == ("missing_evidence", "conflicting_records", "temporal_misalignment")
 
@@ -48,8 +49,10 @@ def test_experiment_runner_writes_matrix_rows_and_applies_gate_only_to_agentic_c
     )
     payload = json.loads((out_dir / "results.json").read_text(encoding="utf-8"))
 
-    assert len(result.rows) == 12
-    assert len(payload["rows"]) == 12
+    # 3 conditions x 1 case (capped) x 4 systems x 5 replications = 60 rows.
+    assert len(result.rows) == 60
+    assert len(payload["rows"]) == 60
+    assert {r["trial"] for r in result.rows} == {0, 1, 2, 3, 4}
     assert {r["condition"] for r in result.rows} == {"clean", "single_perturbation", "compound_perturbation"}
     assert all(r["release_gate_applied"] is False for r in result.rows if r["system"] != "agentic_cfo")
     assert all(r["release_action"] == "not_applicable_no_release_gate" for r in result.rows if r["system"] != "agentic_cfo")

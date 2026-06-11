@@ -32,9 +32,9 @@ def test_ui_backend_dataset_experiment_results_and_downloads(tmp_path):
     tables = backend.regenerate_chapter4_tables_backend(results_dir=paths.results_dir)
 
     assert dataset["exists"] is True
-    assert dataset["case_count"] == 12
-    assert result["rows"] == 12
-    assert backend.result_status(paths.results_dir)["row_count"] == 12
+    assert dataset["case_count"] == 60
+    assert result["rows"] == 60
+    assert backend.result_status(paths.results_dir)["row_count"] == 60
     assert Path(tables["system_condition_summary"]).exists()
     assert backend.zip_directory_bytes(paths.results_dir)
 
