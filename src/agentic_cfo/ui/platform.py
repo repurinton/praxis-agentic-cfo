@@ -11,6 +11,7 @@ import pandas as pd
 from agentic_cfo.ui import (
     analytics as analytics_backend,
     backend,
+    reset as reset_backend,
     reviews as reviews_backend,
     settings as settings_backend,
 )
@@ -218,7 +219,7 @@ def render_dashboard(paths: backend.PlatformPaths) -> None:
     results = backend.result_status(paths.results_dir)
 
     st.title("Agentic CFO Operations")
-    st.caption("Manage datasets, experiments, run artifacts, audit evidence, and dissertation result outputs from one Python-backed UI.")
+    st.caption("Manage the full praxis lifecycle — configure, generate, run, review, and harvest — from one Python-backed UI.")
     _metric_grid(
         {
             "Dataset Ready": "Yes" if health["dataset_ready"] else "No",
@@ -227,6 +228,28 @@ def render_dashboard(paths: backend.PlatformPaths) -> None:
             "Configs": health["config_count"],
         }
     )
+
+    # Research lifecycle: where the project stands, start to finish.
+    store = _manager(paths).store
+    has_reviews = len(store.list_reviews()) > 0
+    stages = [
+        ("Configure", True, "Settings"),
+        ("Generate data", health["dataset_ready"], "Experiments"),
+        ("Run experiments", health["result_rows"] > 0, "Experiments"),
+        ("Human review", has_reviews, "Reviewer"),
+        ("Analyze & harvest", health["result_rows"] > 0, "Analytics"),
+    ]
+    st.subheader("Research Lifecycle")
+    cols = st.columns(len(stages))
+    for col, (label, done, _page) in zip(cols, stages):
+        mark = "✓" if done else "○"
+        color = "var(--ok)" if done else "var(--subtle)"
+        col.markdown(
+            f'<div class="status-row" style="text-align:center">'
+            f'<div style="font-size:1.5rem;color:{color}">{mark}</div>'
+            f'<div class="small-muted">{escape(label)}</div></div>',
+            unsafe_allow_html=True,
+        )
 
     left, right = st.columns([1, 1])
     with left:
@@ -791,6 +814,67 @@ def render_settings(paths: backend.PlatformPaths) -> None:
     selected = st.selectbox("Preview config", [file for files in configs.values() for file in files], format_func=lambda p: str(p.relative_to(paths.repo_root)))
     if selected:
         _json_block(backend.load_yaml_mapping(Path(selected)))
+
+    render_reset_panel(paths)
+
+
+def render_reset_panel(paths: backend.PlatformPaths) -> None:
+    st.divider()
+    st.subheader("Danger Zone — Reset Platform")
+    store = _manager(paths).store
+    summary = reset_backend.platform_state_summary(paths, store)
+    st.caption(
+        "Permanently deletes ALL generated synthetic data, results, retained "
+        "artifacts, run bundles, job history, review samples, and ratings — "
+        "returning the platform to its default empty state. Source configs and "
+        "your API key are preserved."
+    )
+    st.dataframe(
+        _df([{
+            "synthetic cases": summary["synthetic_cases"],
+            "result rows": summary["result_rows"],
+            "runs": summary["runs"],
+            "jobs": summary["jobs"],
+            "review samples": summary["review_samples"],
+            "reviews": summary["reviews"],
+            "files": summary["files"],
+        }]),
+        hide_index=True,
+        width="stretch",
+    )
+
+    if not summary["has_generated_data"] and summary["files"] == 0 and summary["jobs"] == 0:
+        st.success("Platform is already at its default empty state — no synthetic data generated.")
+        st.session_state.pop("reset_armed", None)
+        return
+
+    # Confirmation step 1: acknowledge and type the exact phrase.
+    also_settings = st.checkbox("Also reset generation mode/model to defaults (keeps API key)", value=False)
+    ack = st.checkbox("I understand this permanently deletes all generated data.")
+    phrase = st.text_input(f"Type {reset_backend.CONFIRM_PHRASE} to enable reset", value="")
+    enabled = ack and phrase.strip() == reset_backend.CONFIRM_PHRASE
+    if not enabled:
+        st.session_state.pop("reset_armed", None)
+
+    if st.button("Reset platform…", disabled=not enabled):
+        st.session_state.reset_armed = True
+
+    # Confirmation step 2: explicit final confirmation.
+    if st.session_state.get("reset_armed"):
+        st.warning("This cannot be undone. Confirm to permanently reset now.")
+        c1, c2 = st.columns(2)
+        if c1.button("Yes, permanently reset now", type="primary", width="stretch"):
+            result = reset_backend.reset_platform(paths=paths, store=store, clear_settings=also_settings)
+            st.session_state.pop("reset_armed", None)
+            st.success(
+                f"Reset complete — removed {result['files_removed']} files, "
+                f"{result['jobs_cleared']} jobs, {result['review_samples_cleared']} samples, "
+                f"and {result['reviews_cleared']} reviews. Platform is back to its default state."
+            )
+            st.rerun()
+        if c2.button("Cancel", width="stretch"):
+            st.session_state.pop("reset_armed", None)
+            st.rerun()
 
 
 def render_gui_plan() -> None:

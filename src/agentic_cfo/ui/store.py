@@ -213,6 +213,11 @@ class PlatformStore:
             )
             return cur.rowcount
 
+    def clear_all_jobs(self) -> int:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM jobs")
+            return cur.rowcount
+
     # ----- settings -------------------------------------------------------
 
     def set_setting(self, key: str, value: str) -> None:
