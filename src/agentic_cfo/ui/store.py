@@ -111,6 +111,35 @@ class PlatformStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS review_samples (
+                    blinded_id TEXT PRIMARY KEY,
+                    artifact_id TEXT NOT NULL,
+                    system TEXT NOT NULL,
+                    condition TEXT NOT NULL,
+                    release_action TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reviews (
+                    review_id TEXT PRIMARY KEY,
+                    blinded_id TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    reviewer_id TEXT NOT NULL,
+                    rating INTEGER NOT NULL,
+                    rationale TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_blinded_reviewer "
+                "ON reviews (blinded_id, reviewer_id)"
+            )
 
     # ----- jobs -----------------------------------------------------------
 
@@ -198,6 +227,83 @@ class PlatformStore:
         with self._connect() as conn:
             row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
+
+    # ----- review samples -------------------------------------------------
+
+    def replace_review_samples(self, samples: list[dict[str, Any]]) -> int:
+        """Replace the current blinded review assignment with a new sample set."""
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM review_samples")
+            conn.executemany(
+                "INSERT INTO review_samples "
+                "(blinded_id, artifact_id, system, condition, release_action, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        s["blinded_id"],
+                        s["artifact_id"],
+                        s["system"],
+                        s["condition"],
+                        s["release_action"],
+                        now,
+                    )
+                    for s in samples
+                ],
+            )
+        return len(samples)
+
+    def list_review_samples(self) -> tuple[dict[str, Any], ...]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM review_samples ORDER BY blinded_id"
+            ).fetchall()
+        return tuple(dict(r) for r in rows)
+
+    def clear_review_samples(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM review_samples")
+
+    # ----- reviews --------------------------------------------------------
+
+    def record_review(
+        self,
+        *,
+        review_id: str,
+        blinded_id: str,
+        artifact_id: str,
+        reviewer_id: str,
+        rating: int,
+        rationale: str = "",
+    ) -> None:
+        """Insert or update a reviewer's rating for one blinded item."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO reviews "
+                "(review_id, blinded_id, artifact_id, reviewer_id, rating, rationale, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(blinded_id, reviewer_id) DO UPDATE SET "
+                "rating = excluded.rating, rationale = excluded.rationale, "
+                "created_at = excluded.created_at",
+                (review_id, blinded_id, artifact_id, reviewer_id, int(rating), rationale, time.time()),
+            )
+
+    def list_reviews(self) -> tuple[dict[str, Any], ...]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM reviews ORDER BY created_at").fetchall()
+        return tuple(dict(r) for r in rows)
+
+    def get_review(self, *, blinded_id: str, reviewer_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM reviews WHERE blinded_id = ? AND reviewer_id = ?",
+                (blinded_id, reviewer_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def clear_reviews(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM reviews")
 
 
 def _row_to_job(row: sqlite3.Row) -> JobRecord:

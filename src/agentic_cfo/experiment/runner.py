@@ -4,6 +4,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
@@ -64,6 +65,7 @@ def run_experiment(
     max_cases_per_condition: int | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    persist_artifacts: bool = True,
 ) -> ExperimentResult:
     """Run the system x condition x replication matrix.
 
@@ -77,6 +79,7 @@ def run_experiment(
     verifier = AgenticCFOVerifierAgent()
     release_gate = ReleaseGate()
     rows: list[dict] = []
+    artifact_records: list[dict] = []
 
     # Replication protocol (paper Chapter 4): each (condition, case, system) cell
     # is executed `contract.replications` times so that run-to-run variation can be
@@ -131,6 +134,34 @@ def run_experiment(
                         "verification_status": verification.status.value,
                     })
                     rows.append(row)
+                    if persist_artifacts:
+                        artifact_records.append({
+                            "artifact_id": artifact.artifact_id,
+                            "system": artifact.system.value,
+                            "condition": condition,
+                            "case_id": case.case_id,
+                            "trial": trial,
+                            "partition": artifact.partition,
+                            "title": artifact.title,
+                            "narrative": artifact.narrative,
+                            "generated_by": artifact.generated_by,
+                            "claims": [claim.to_dict() for claim in artifact.claims],
+                            "source_records": [
+                                {
+                                    "account": r.account,
+                                    "balance": r.balance,
+                                    "period": r.period,
+                                    "entity_id": r.entity_id,
+                                }
+                                for r in case.records
+                            ],
+                            "metrics": dict(verification.metrics),
+                            "verification_status": verification.status.value,
+                            "unsupported_claim_ids": list(verification.unsupported_claim_ids),
+                            "release_action": release_action,
+                            "release_gate_applied": release_gate_applied,
+                            "human_audit_eligible": human_audit_eligible,
+                        })
                     if on_progress is not None:
                         on_progress(len(rows), total)
 
@@ -147,7 +178,20 @@ def run_experiment(
         "llm_model": llm_model() if mode == "live" else "deterministic-local",
         "row_count": len(rows),
     }
-    result = ExperimentResult(rows=tuple(rows), meta=meta)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Retain the generated artifacts (narrative, claims, evidence bindings, source
+    # records, metrics) so they can be reviewed and audited. The file is content-
+    # hashed and the digest recorded in meta for tamper-evidence.
+    if persist_artifacts:
+        artifacts_text = "".join(
+            json.dumps(record, sort_keys=True) + "\n" for record in artifact_records
+        )
+        (out_dir / "artifacts.jsonl").write_text(artifacts_text, encoding="utf-8")
+        meta["artifacts_path"] = "artifacts.jsonl"
+        meta["artifacts_count"] = len(artifact_records)
+        meta["artifacts_sha256"] = sha256(artifacts_text.encode("utf-8")).hexdigest()
+
+    result = ExperimentResult(rows=tuple(rows), meta=meta)
     (out_dir / "results.json").write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     return result

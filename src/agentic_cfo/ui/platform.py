@@ -8,7 +8,12 @@ from typing import Any
 
 import pandas as pd
 
-from agentic_cfo.ui import backend, settings as settings_backend
+from agentic_cfo.ui import (
+    analytics as analytics_backend,
+    backend,
+    reviews as reviews_backend,
+    settings as settings_backend,
+)
 from agentic_cfo.ui.jobs import get_job_manager
 
 try:
@@ -26,6 +31,8 @@ NAV_ITEMS = (
     "Data",
     "Audit",
     "Human Audit",
+    "Reviewer",
+    "Analytics",
     "Settings",
     "GUI Plan",
 )
@@ -527,6 +534,198 @@ def render_human_audit(paths: backend.PlatformPaths) -> None:
         _download_file("Download Human Audit Summary", out_path, "application/json")
 
 
+def render_reviewer(paths: backend.PlatformPaths) -> None:
+    st.title("Reviewer")
+    store = _manager(paths).store
+    results_dir = paths.results_dir
+    artifacts = reviews_backend.load_artifacts(results_dir)
+    if not artifacts:
+        st.info(
+            "No retained artifacts found. Run the experiment matrix on the Experiments "
+            "page (it now persists artifacts to results/artifacts.jsonl), then return here."
+        )
+        return
+
+    with st.expander("Review flags — CPA four-level rubric", expanded=False):
+        st.dataframe(_df(reviews_backend.rubric_flags()), hide_index=True, width="stretch")
+
+    top = st.columns([0.4, 0.3, 0.3])
+    reviewer_id = top[0].text_input("Reviewer ID", value=st.session_state.get("reviewer_id", "reviewer:1"))
+    st.session_state.reviewer_id = reviewer_id
+    per_system = top[1].number_input("Sample per system", min_value=1, max_value=200, value=5, step=1)
+    if top[2].button("Assign blinded sample", width="stretch"):
+        n = reviews_backend.assign_blinded_sample(store, results_dir=results_dir, per_system=int(per_system))
+        st.success(f"Assigned {n} blinded items")
+        st.rerun()
+
+    samples = store.list_review_samples()
+    if not samples:
+        st.info("No blinded sample assigned yet. Choose a size and click Assign blinded sample.")
+        return
+
+    prog = reviews_backend.reviewer_progress(store, reviewer_id)
+    st.progress(prog["fraction"], text=f"{reviewer_id}: {prog['reviewed']}/{prog['total']} reviewed")
+
+    options = [s["blinded_id"] for s in samples]
+    nxt = reviews_backend.next_unrated(store, reviewer_id)
+    default_idx = options.index(nxt["blinded_id"]) if nxt else 0
+
+    def _fmt(b: str) -> str:
+        done = store.get_review(blinded_id=b, reviewer_id=reviewer_id)
+        return f"{b}  {'✓' if done else '•'}"
+
+    blinded_id = st.selectbox("Item", options, index=default_idx, format_func=_fmt)
+    item = reviews_backend.reviewable_item(store, artifacts, blinded_id=blinded_id, reviewer_id=reviewer_id)
+    if item is None:
+        st.warning("Item not found.")
+        return
+
+    left, right = st.columns([0.58, 0.42])
+    with left:
+        st.subheader("Artifact (blinded)")
+        st.caption(
+            f"Condition: **{item['condition']}** · release action: {item['release_action']} · "
+            f"verification: {item['verification_status']}"
+        )
+        st.markdown(f"> {escape(item['narrative'])}")
+        st.caption("Claims")
+        claim_rows = [
+            {
+                "claim": c.get("text"),
+                "type": c.get("claim_type"),
+                "value": c.get("value"),
+                "evidence_spans": len(c.get("evidence", [])),
+            }
+            for c in item["claims"]
+        ]
+        st.dataframe(_df(claim_rows), hide_index=True, width="stretch")
+        st.caption("Source trial balance")
+        st.dataframe(_df(item["source_records"]), hide_index=True, width="stretch")
+
+    with right:
+        st.subheader("Metrics")
+        st.dataframe(
+            _df([{"metric": k, "value": round(float(v), 3)} for k, v in item["metrics"].items()]),
+            hide_index=True,
+            width="stretch",
+        )
+        st.subheader("Classification")
+        flags = reviews_backend.rubric_flags()
+        ratings = [f["rating"] for f in flags]
+        labels = {f["rating"]: f"{f['rating']} — {f['label']}" for f in flags}
+        default_rating = item["existing_rating"] if item["existing_rating"] is not None else 3
+        rating = st.radio(
+            "Review flag",
+            ratings,
+            index=ratings.index(default_rating),
+            format_func=lambda r: labels[r],
+            help="\n".join(f"{f['rating']} = {f['definition']}" for f in flags),
+        )
+        rationale = st.text_area("Rationale (optional)", value=item["existing_rationale"])
+        if st.button("Save rating", type="primary", width="stretch"):
+            reviews_backend.record_review(
+                store,
+                blinded_id=blinded_id,
+                artifact_id=item["artifact_id"],
+                reviewer_id=reviewer_id,
+                rating=int(rating),
+                rationale=rationale,
+            )
+            st.success("Rating saved")
+            st.rerun()
+
+
+def render_analytics(paths: backend.PlatformPaths) -> None:
+    st.title("Analytics")
+    store = _manager(paths).store
+    if not reviews_backend.load_results_rows(paths.results_dir):
+        st.info("No results yet. Run the experiment matrix first.")
+        return
+
+    data = analytics_backend.full_analytics(
+        dataset_dir=paths.dataset_dir, results_dir=paths.results_dir, store=store
+    )
+    syn, arts, mets, rev = data["synthetic_data"], data["artifacts"], data["metrics"], data["reviews"]
+
+    st.subheader("Synthetic Data")
+    _metric_grid({
+        "Cases": syn["case_count"],
+        "Accounts": len(syn["accounts"]),
+        "TB Rows": syn["trial_balance_rows"],
+        "Seed": syn.get("seed") if syn.get("seed") is not None else "—",
+    })
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption("Cases per partition")
+        st.bar_chart(pd.Series(syn["partitions"], name="cases"))
+    with c2:
+        st.caption("Account balance ranges")
+        st.dataframe(
+            _df([{"account": a, **v} for a, v in syn["account_stats"].items()]),
+            hide_index=True,
+            width="stretch",
+        )
+
+    st.subheader("Artifacts")
+    _metric_grid({
+        "Retained": arts["retained_artifacts"],
+        "Result Rows": arts["total_rows"],
+        "Mode": (arts["llm_mode"] or "?").upper(),
+        "Audit-eligible": arts["human_audit_eligible"],
+    })
+    if arts["artifacts_sha256"]:
+        st.caption(f"Tamper-evident digest (sha256): `{arts['artifacts_sha256'][:48]}…`")
+    a1, a2 = st.columns(2)
+    with a1:
+        st.caption("Release actions")
+        st.bar_chart(pd.Series(arts["release_actions"], name="count"))
+    with a2:
+        st.caption("Artifacts by system × condition")
+        st.dataframe(_df(arts["by_system_condition"]), hide_index=True, width="stretch")
+
+    st.subheader("Metrics across baselines and agentic CFO")
+    clean = mets["clean_metric_by_system"]
+    if clean:
+        st.caption("Clean-condition metric profile by system")
+        st.bar_chart(pd.DataFrame(clean))
+    st.caption("System × condition summary")
+    st.dataframe(_df(mets["summary"]), hide_index=True, width="stretch")
+    st.caption("Release-gate pass rate by system × condition")
+    st.dataframe(_df(mets["gate_pass_by_system_condition"]), hide_index=True, width="stretch")
+    st.caption("Perturbation degradation (deltas vs clean)")
+    st.dataframe(_df(mets["deltas"]), hide_index=True, width="stretch")
+
+    st.subheader("Reviewer Progress & Ratings")
+    _metric_grid({
+        "Reviews": rev["review_count"],
+        "Reviewers": rev["reviewer_count"],
+        "Raw Agreement": f'{rev["raw_agreement"]:.3f}',
+        "Weighted κ": f'{rev["weighted_cohens_kappa"]:.3f}',
+    })
+    if rev["review_count"]:
+        r1, r2 = st.columns(2)
+        with r1:
+            st.caption("Rating distribution (all reviewers)")
+            st.bar_chart(pd.Series(rev["rating_distribution"], name="count"))
+            st.caption("Reviews per reviewer")
+            st.dataframe(
+                _df([{"reviewer": k, "reviews": v} for k, v in rev["ratings_per_reviewer"].items()]),
+                hide_index=True,
+                width="stretch",
+            )
+        with r2:
+            st.caption("Mean rating by true system (reveal)")
+            st.bar_chart(pd.Series(rev["mean_rating_by_system"], name="mean_rating"))
+            st.caption("Adjudicated distribution")
+            st.dataframe(
+                _df([{"rating": k, "count": v} for k, v in rev["adjudicated_distribution"].items()]),
+                hide_index=True,
+                width="stretch",
+            )
+    else:
+        st.info("No reviews recorded yet — classify artifacts on the Reviewer page.")
+
+
 def render_settings(paths: backend.PlatformPaths) -> None:
     st.title("Settings")
 
@@ -599,20 +798,20 @@ def render_gui_plan() -> None:
     st.write("Implemented in this build:")
     done_rows = (
         {"area": "Background jobs", "status": "done", "detail": "Threaded job queue with progress, cooperative cancellation, and per-job logs."},
-        {"area": "Persistent state", "status": "done", "detail": "SQLite store for job history and UI settings (.agentic_cfo/platform.db)."},
+        {"area": "Persistent state", "status": "done", "detail": "SQLite store for job history, settings, review samples, and ratings (.agentic_cfo/platform.db)."},
         {"area": "Settings / LLM", "status": "done", "detail": "API-key field and deterministic/live mode toggle, persisted to .env and applied to running jobs."},
-        {"area": "Provenance", "status": "done", "detail": "Results page surfaces llm_mode/model/replications from results.json meta."},
+        {"area": "Artifact retention", "status": "done", "detail": "Matrix run persists every artifact (narrative/claims/evidence/source) to a content-hashed artifacts.jsonl."},
+        {"area": "Reviewer workflow", "status": "done", "detail": "Blinded assignment, four-level rubric classification, progress tracking, agreement (raw + weighted kappa) and adjudication."},
+        {"area": "Analytics", "status": "done", "detail": "Synthetic-data, artifact, cross-system metric, and reviewer progress/ratings summaries with charts."},
+        {"area": "Provenance", "status": "done", "detail": "Results/Analytics surface llm_mode/model/replications and the artifact digest from results.json meta."},
     )
     st.dataframe(_df(done_rows), width="stretch", hide_index=True)
 
     st.write("Remaining hardening (not in scope for this build):")
     plan_rows = (
-        {"area": "Reviewer workflow", "work": "CPA rating import, double-blind assignment, adjudication queue, comments, rubric locks, exportable packets."},
         {"area": "Prompt governance", "work": "Prompt template versioning, diff review, approval gates, and provider/runtime capture."},
         {"area": "Metric adapters", "work": "External FActScore/RAGAS integrations with cached scoring payloads and evaluator version manifests."},
-        {"area": "Analytics", "work": "Hypothesis views, confidence intervals, exact Chapter 4 tables, charts, and statistical notebook exports."},
-        {"area": "Artifact registry", "work": "Searchable evidence spans, claims, exceptions, release attestations, and signed checksum manifests."},
-        {"area": "Operations", "work": "Alerts for failed thresholds, stale datasets, broken audit chains, missing artifacts, and incomplete human-audit samples."},
+        {"area": "Operations", "work": "Alerts for failed thresholds, stale datasets, broken audit chains, missing artifacts, and incomplete reviewer samples."},
         {"area": "Deployment", "work": "Package the UI as a service with environment profiles, health checks, backups, and object-store support."},
     )
     st.dataframe(_df(plan_rows), width="stretch", hide_index=True)
@@ -640,6 +839,10 @@ def app() -> None:
         render_audit(paths)
     elif nav == "Human Audit":
         render_human_audit(paths)
+    elif nav == "Reviewer":
+        render_reviewer(paths)
+    elif nav == "Analytics":
+        render_analytics(paths)
     elif nav == "Settings":
         render_settings(paths)
     else:
